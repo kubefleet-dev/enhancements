@@ -27,9 +27,9 @@ This can be done with the `--signoff` option to `git commit`. See the [Git docum
 The KubeFleet project has adopted the CNCF Code of Conduct. Refer to our
 [Community Code of Conduct](https://github.com/kubefleet-dev/kubefleet/blob/main/CODE_OF_CONDUCT.md) for details.
 
-## KubeFleet enhancement proposal purpose and guidelines
+## KubeFleet enhancement proposal (FEP) purpose and guidelines
 
-A KubeFleet enhancement proposal is a design document that describes a new feature, experience, or an improvement
+A KubeFleet enhancement proposal (FEP) is a design document that describes a new feature, experience, or an improvement
 to existing features/experiences in KubeFleet. The document features a detailed technical specification of
 the feature/experience and a rationale for it.
 
@@ -47,7 +47,7 @@ Each proposal is uniquely identified by an ordinal number, zero-padded to 4 digi
     in implementing and maintaining the enhancement.
 * Submit a proposal.
     * Create an issue in the repository to track the proposal. The issue should be of the title format
-    `KEP-[NNNN]: [YOUR-PROPOSAL-TITLE]`, where `NNNN` is the next available ordinal number not used by any published
+    `FEP-[NNNN]: [YOUR-PROPOSAL-TITLE]`, where `NNNN` is the next available ordinal number not used by any published
     proposal or proposal that has been submitted for review, and `YOUR-PROPOSAL-TITLE` is the title of your proposal.
     * Fork the repository, and create a new directory for your enhancement proposal under the path `enhancements/`.
     The name of the directory should be of the format `[NNNN]-[short-description-of-the-proposal]`, where `NNNN` is
@@ -55,12 +55,12 @@ Each proposal is uniquely identified by an ordinal number, zero-padded to 4 digi
     proposal in lowercase letters and the kebab case format. For example, the directory might be named
     `0001-placement-policy-api`.
     * Write the proposal in a file named `README.md` under the proposal directory. Follow the structure and directives
-    as given by the template provided in [NNNN-kep-template/README.md](enhancements/NNNN-kep-template/README.md). You can
+    as given by the template provided in [NNNN-FEP-template/README.md](enhancements/NNNN-FEP-template/README.md). You can
     add additional files to the proposal directory as needed, such as diagrams, code snippets, and other supporting
     materials.
     * Send a pull request to the `main` branch of this repository with your proposal directory. The PR should be of the
-    title format `KEP-[NNNN]: [YOUR-PROPOSAL-TITLE]`, where `NNNN` is the ordinal number of your proposal, and
-    `YOUR-PROPOSAL-TITLE` is the title of your proposal. For example, the PR might be titled `KEP-0001: Placement Policy API`.
+    title format `FEP-[NNNN]: [YOUR-PROPOSAL-TITLE]`, where `NNNN` is the ordinal number of your proposal, and
+    `YOUR-PROPOSAL-TITLE` is the title of your proposal. For example, the PR might be titled `FEP-0001: Placement Policy API`.
     Link the PR to the issue created earlier.
 * Discuss and iterate on the proposal.
     * The proposal will be reviewed by the [KubeFleet maintainers](https://github.com/kubefleet-dev/kubefleet/blob/main/MAINTAINERS.md),

@@ -7,10 +7,10 @@ The repository helps facilitate and track discussions and decisions on how KubeF
 in the form of actionable design documents. The enhancements, once approved, become part of the KubeFleet roadmap,
 and are implemented in the project by stakeholders, possibly across multiple release cycles.
 
-Anyone is welcome to create an enhancement proposal; to get started, see our [Contributing Guidelines](CONTRIBUTING.md)
-for more information. You can find the list of approved enhancement proposals in the [enhancements](enhancements) directory;
-look up active proposals under discussion in the list of issues and pull requests of this repository, and join
-the conversation to help make the proposal better.
+Anyone is welcome to create a KubeFleet enhancement proposal (FEP); to get started, see our
+[Contributing Guidelines](CONTRIBUTING.md) for more information. You can find the list of approved
+enhancement proposals in the [enhancements](enhancements) directory; look up active proposals under discussion in
+the list of issues and pull requests of this repository, and join the conversation to help make the proposal better.
 
 We are still iterating on our enhancement proposal process. If you have any concern, feedback, or suggestion, please
 submit an issue in this repository or reach out to us via [our community channels](https://github.com/kubefleet-dev/community).

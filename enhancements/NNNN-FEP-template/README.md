@@ -8,7 +8,7 @@ updates.
 
 [Kubernetes documentation style guide]: https://github.com/kubernetes/community/blob/master/contributors/guide/style-guide.md
 -->
-# KEP-NNNN: Your short, descriptive title
+# FEP-NNNN: Your short, descriptive title
 
 <!--
 This is the title of your proposal. Keep it short, simple, and descriptive. A good
@@ -90,7 +90,7 @@ The "Design Details" section below is for the real nitty-gritty.
 ### User Stories (Optional)
 
 <!--
-Detail the things that people will be able to do if this KEP is implemented.
+Detail the things that people will be able to do if this FEP is implemented.
 Include as much detail as possible so that people can understand the "how" of
 the system. The goal here is to make this feel real for users without getting
 bogged down.
@@ -212,7 +212,7 @@ What would happen if the dependencies are not available?
 ## Drawbacks
 
 <!--
-Why should this KEP _not_ be implemented?
+Why should this FEP _not_ be implemented?
 -->
 
 ## Alternatives
