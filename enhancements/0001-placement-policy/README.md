@@ -203,8 +203,8 @@ for users who are just getting started with KubeFleet and multi-cluster manageme
 * Deliver a new placement experience, backed by a set of new placement APIs, built for highly dynamic multi-cluster environments:
     * Let users express individual scheduling requirements instead of a single filtering constraint, and have KubeFleet track each
     requirement and fulfill it to the best of its ability.
-    * Produce hints/signals that platforms/cloud providers, such as CAPI, reconcile and act upon to provision clusters on demand when
-    no candidate exists in the fleet.
+    * Produce hints/signals that platforms/cloud providers, such as CAPI, can reconcile and act upon to provision clusters on demand when
+    no candidate exist for a scheduling requirement in the fleet.
 * Add an annotation-based placement workflow that lets users place resources with a single annotation on the resource itself, with no
 placement API object to author.
 
