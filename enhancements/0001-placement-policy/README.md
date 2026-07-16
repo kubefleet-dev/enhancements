@@ -200,14 +200,13 @@ for users who are just getting started with KubeFleet and multi-cluster manageme
 
 ### Goals
 
-* Design and implement a new placement experience, supported by a set of new placement APIs, that is designed for a highly dynamic
-multi-cluster environment:
-    * instead of asking users for one single scheduling constraint that will be used to filter member clusters, the new experience grants
-    users the option to specify individual scheduling requirements, which KubeFleet will track and fulfill to the best of its ability.
-    * KubeFleet can produce hints/signals, which platforms/cloud providers, such as CAPI, can reconcile and act upon, to fulfill users'
-    scheduling requirements when there are no available candidates in the fleet.
-* Add an annotation-based placement workflow to KubeFleet, which allows users to place their resources with a simple annotation on
-the resources themselves, without having to spell out every detail in a placement API object.
+* Deliver a new placement experience, backed by a set of new placement APIs, built for highly dynamic multi-cluster environments:
+    * Let users express individual scheduling requirements instead of a single filtering constraint, and have KubeFleet track each
+    requirement and fulfill it to the best of its ability.
+    * Produce hints/signals that platforms/cloud providers, such as CAPI, reconcile and act upon to provision clusters on demand when
+    no candidate exists in the fleet.
+* Add an annotation-based placement workflow that lets users place resources with a single annotation on the resource itself, with no
+placement API object to author.
 
 ### Non-Goals
 
