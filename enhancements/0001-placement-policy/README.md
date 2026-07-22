@@ -326,6 +326,149 @@ selector using the reverse of the criteria above.
 
 </details>
 
+#### Comparing the `PlacementPolicy` APIs with the current placement APIs (`ResourcePlacement` and `ClusterResourcePlacement` APIs)
+
+In terms of the cluster scheduling experience, the `PlacementPolicy` APIs provide a way to express a logic OR based union of criteria that
+would typically require multiple separate `ResourcePlacement` (or its cluster-scoped variant) API objects to achieve. The API also positions
+the criteria (label matchers, label/cluster property expressions) as scheduling requirements as opposed to filter-based constraints.
+It grants a more flexible approach for users to pick clusters, and enables the following scenarios that are not at all possible
+(or are severely limited) with the current placement APIs:
+
+* mix and match all together (`PickAll`), N out of M (`PickN`), and name/alias-based (`PickFixed`) placement scenarios in one single placement:
+
+    _Example: as a multi-cluster admin, I would like to place resources on all the member clusters in the `staging` environment group, plus two member clusters in the `canary` environment group from the `centralus` region._
+
+    <details>
+      <summary><code>PlacementPolicy</code> API object</summary>
+      <code style="white-space: pre-wrap;">
+      apiVersion: placement.kubefleet.dev/v1alpha1
+      kind: PlacementPolicy
+      metadata: ...
+      spec:
+        resourceSelectors: ...
+        clusterSelectors:
+        - terms:
+          - matchLabels:
+              env: staging
+          count: All
+        - terms:
+          - matchLabels:
+              env: canary
+              topology.kubernetes.io/region: centralus
+          count: 2
+      </code>
+    </details>
+
+    _Example: as a multi-cluster admin, I would like to place resources on all member clusters in the `eastus` region, plus the cluster `bravelion`._
+
+    <details>
+      <summary><code>PlacementPolicy</code> API object</summary>
+      <code style="white-space: pre-wrap;">
+      apiVersion: placement.kubefleet.dev/v1alpha1
+      kind: PlacementPolicy
+      metadata: ...
+      spec:
+        resourceSelectors: ...
+        clusterSelectors:
+        - terms:
+          - matchLabels:
+              topology.kubernetes.io/region: eastus
+          count: All
+        - terms:
+          - matchLabels:
+              kubefleet.dev/cluster-alias: bravelion
+      </code>
+    </details>
+
+* spread resources explicitly as needed across different groups of clusters, for availability, performance, or other considerations; upscale
+or downscale the number of clusters in a group without affecting other groups:
+
+    _Example: as a multi-cluster admin, I would like to run one replica of my application in the `eastus` region, and two replicas in the `westus` region._
+
+    <details>
+      <summary><code>PlacementPolicy</code> API object</summary>
+      <code style="white-space: pre-wrap;">
+      apiVersion: placement.kubefleet.dev/v1alpha1
+      kind: PlacementPolicy
+      metadata: ...
+      spec:
+        resourceSelectors: ...
+        clusterSelectors:
+        - terms:
+          - matchLabels:
+              topology.kubernetes.io/region: eastus
+          count: 1
+        - terms:
+          - matchLabels:
+              topology.kubernetes.io/region: westus
+          count: 2
+      </code>
+    </details>
+
+    _Example: as a multi-cluster admin, I would like to scale up my application from 1 replica to 3 in the `eastus` region, but leave the `westus` region unchanged._
+
+    <details>
+      <summary><code>PlacementPolicy</code> API object</summary>
+      <code style="white-space: pre-wrap;">
+      apiVersion: placement.kubefleet.dev/v1alpha1
+      kind: PlacementPolicy
+      metadata: ...
+      spec:
+        resourceSelectors: ...
+        clusterSelectors:
+        - terms:
+          - matchLabels:
+              topology.kubernetes.io/region: eastus
+          # Edited from 1 to 3 to scale up the application in the `eastus` region specifically.
+          count: 3
+        - terms:
+          - matchLabels:
+              topology.kubernetes.io/region: westus
+          count: 2
+      </code>
+    </details>
+
+* specify scheduling requirements that cannot be fulfilled by existing member clusters, focusing on what is needed without
+having to know the current spread of member clusters in the fleet; track the fulfillment of each scheduling requirement individually
+and learn about exactly which scheduling requirement a cluster scheduling attempt is incomplete for:
+
+    _Example: as a multi-cluster admin, I would like to have my application running on 2 clusters assigned to team red with Kubernetes version 1.35, and 2 clusters assigned to team blue with Kubernetes version 1.35; if this cannot be achieved, I would like to know which team is lacking the appropriate clusters._
+
+    > Note: with `PickN` CRPs/RPs, KubeFleet might consider the placement fulfilled as long as it can find 4 clusters with Kubernetes 
+    > version 1.35 between the two teams, even if one of the teams does not have any matching cluster at all. In addition, when it cannot
+    > find enough clusters, unless the user cross-checks the picked clusters with the criteria manually, there is no way to tell
+    > which part of the criteria is unfulfilled.
+
+    <details>
+      <summary><code>PlacementPolicy</code> API object</summary>
+      <code style="white-space: pre-wrap;">
+      apiVersion: placement.kubefleet.dev/v1alpha1
+      kind: PlacementPolicy
+      metadata: ...
+      spec:
+        resourceSelectors: ...
+        clusterSelectors:
+        - terms:
+          - matchLabels:
+              team: red
+            clusterPropertyExpressions:
+            - key: k8s.io/k8s-version
+              operator: In
+              values:
+              - "v1.35"
+          count: 2
+        - terms:
+          - matchLabels:
+              team: blue
+            clusterPropertyExpressions:
+            - key: k8s.io/k8s-version
+              operator: In
+              values:
+              - "v1.35"
+          count: 2
+      </code>
+    </details>
+
 ### Cluster requests
 
 When a cluster selector (a scheduling requirement) cannot be fulfilled, KubeFleet can request a new cluster from the environment,
@@ -341,21 +484,28 @@ spec:
     name: app
     namespace: work
   clusterSelector:
-  - terms:
+    terms:
     - matchLabels:
-        region: eastus
+        topology.kubernetes.io/region: eastus
 ```
 
 Obviously, not all scheduling requirements can be translated into a cluster request. KubeFleet will provide options for admins
 to specify which keys are eligible for cluster requests; if a cluster selector contains an ineligible key in its label matchers,
-label expressions, or cluster property expressions, KubeFleet will not submit a cluster request when it cannnot be fulfilled. Users also
+label expressions, or cluster property expressions, KubeFleet will not submit a cluster request when it cannot be fulfilled. Users also
 have the option to explicitly disable cluster requests for a cluster selector.
 
 KubeFleet expects that the cluster request will be reconciled by the platform/cloud provider in use. A cluster request is in essence
 a hint of what kind of cluster is needed; it is not a full specification of a Kubernetes cluster. KubeFleet assumes that the underlying
 platform/cloud provider owns a `class`-like configuration (such as `ClusterClass` objects in the Cluster API project) that can function
-as cluster blueprints, which would take the hint from KubeFleet as inputs/overrides and prepare the new cluster accordingly. KubeFleet
-will withdraw a cluster request when a candidate for the scheduling requirement is found.
+as cluster blueprints, which would take the hint from KubeFleet as inputs/overrides and prepare the new cluster accordingly.
+
+A placement policy manages the lifecycle of all the cluster requests it creates. Note that the placement will not wait for a cluster request
+to be completed; instead, it watches changes on the member cluster side and evaluates unfulfilled cluster selectors as soon as a new
+cluster is joined to the fleet, or an existing cluster has been relabeled; when the controller finds that a previously unfulfilled cluster
+selector can now be fulfilled, it will withdraw the corresponding cluster request, regardless of the status of the cluster request.
+In other words, KubeFleet will withdraw a cluster request either when it is completed and yields a new cluster that has been picked
+by the placement policy that creates the cluster request; or when the cluster request is still pending resolution, yet the placement policy
+has found a better candidate.
 
 A concern is that, in the new experience, multiple placements might be submitting cluster requests at the same time, and the addition
 of a new cluster to the fleet might be able to satisfy multiple unfulfilled cluster selectors across different placements. Considering that
@@ -366,14 +516,16 @@ will not attempt to arrange/compose cluster requests across placements; instead:
 submitted by a placement and across the fleet;
 * Any platform/cloud provider controller for cluster provisioning should also have its own limits on the number of concurrent cluster
 requests that it can handle;
-* The cluster request API features a field in the status, `LatestObservedClusterCreationTimestamp`, that denotes the latest creation
-timestamp of all member clusters evaluated by the placement policy that creates the cluster request; if the platform/cloud provider
-controller finds that a new cluster has been added but a cluster request has not yet evaluated all clusters, i.e., the latest creation
-timestamp has lagged behind, it can simply ignore the cluster request and wait for the placement controllers to catch up;
+* The hub cluster API server tracks the creation timestamps of all member cluster API objects. Put together, the timestamps become a
+time series/monotonically increasing counter. When creating a cluster request, the placement controller adds to it the latest counter value
+(the latest creation timestamp among all member clusters) via the `LatestObservedClusterCreationTimestamp` field; and by checking this value
+one (such as the platform/cloud provider code) can know for sure whether a cluster request is still fresh (i.e., whether the placement
+controller has inspected all the clusters). Only fresh cluster requests need reconciliation.
+    * KubeFleet will either withdraw stale cluster requests if it finds that their corresponding cluster selectors can now be fulfilled, or
+    refresh the `LatestObservedClusterCreationTimestamp` field if it finds that the cluster request is still needed.
 
 Admittedly this is a best-effort approach and there might still be cases where clusters are over-provisioned; however, this should be a
 reasonable trade-off between complexity and efficiency, with limited impact even under the worst case scenarios.
-
 
 #### Annotation-based placement
 
