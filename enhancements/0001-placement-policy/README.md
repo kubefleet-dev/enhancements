@@ -1302,5 +1302,6 @@ See the discussions in the [About having two placement experiences in KubeFleet]
 
 ## Implementation History
 
+* Aug 03, 2026: Revision #2 on the initial draft based on discussions (cluster selectors and annotation-based placement workflow).
 * Jun 17, 2026: Revision #1 on the initial draft based on early discussions.
 * Jul 01, 2026: Initial draft completed.
