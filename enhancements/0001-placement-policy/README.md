@@ -8,6 +8,7 @@
   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
   - [`PlacementPolicy` APIs](#placementpolicy-apis)
+    - [Comparing the `PlacementPolicy` APIs with the current placement APIs (`ResourcePlacement` and `ClusterResourcePlacement` APIs)](#comparing-the-placementpolicy-apis-with-the-current-placement-apis-resourceplacement-and-clusterresourceplacement-apis)
   - [Cluster requests](#cluster-requests)
     - [Annotation-based placement](#annotation-based-placement)
     - [How the `PlacementPolicy` APIs work](#how-the-placementpolicy-apis-work)
@@ -204,7 +205,7 @@ for users who are just getting started with KubeFleet and multi-cluster manageme
     * Let users express individual scheduling requirements instead of a single filtering constraint, and have KubeFleet track each
     requirement and fulfill it to the best of its ability.
     * Produce hints/signals that platforms/cloud providers, such as CAPI, can reconcile and act upon to provision clusters on demand when
-    no candidate exist for a scheduling requirement in the fleet.
+    no candidates exist for a scheduling requirement in the fleet.
 * Add an annotation-based placement workflow that lets users place resources with a single annotation on the resource itself, with no
 placement API object to author.
 
@@ -260,7 +261,7 @@ spec:
     count: All
   - terms:
     - matchLabels:
-        env: prod
+        env: canary
         topology.kubernetes.io/region: eastus
     count: 1
 ```
@@ -274,7 +275,11 @@ Each cluster selector is a scheduling requirement of its own that KubeFleet will
 using label matchers (e.g., `env=staging`), label expressions (e.g., `region in (eastus, westus)`), or cluster property expressions
 (e.g., `k8s.io/k8s-version in ["v1.35"]`). KubeFleet reserves a special label, `kubefleet.dev/cluster-alias`, which users can use to select
 clusters by their names (aliases). A cluster selector also features a `count` field, which accepts either a positive integer or a special
-value `All`, to specify how many clusters are needed based on the given scheduling requirement.
+value `All`, to specify how many clusters are **desired** based on the given scheduling requirement; a selector with the count
+`All` will select all the clusters that match with it. Aside from the `count` field, a cluster selector accepts a `minCount` field as well,
+which specifies the minimum number of clusters that must be selected for the cluster selector to be fulfilled. When `count` is a positive
+integer, `minCount` defaults to the same value as `count` and must be less than or equal to `count`; when `count` is `All`, `minCount`
+defaults to 1 and can be any positive integer.
 
 <details>
   <summary>Note: why use a label instead of a direct name reference?</summary>
@@ -289,10 +294,60 @@ value `All`, to specify how many clusters are needed based on the given scheduli
 
 </details>
 
-The list of cluster selectors are evaluated in the order of each item's appearance. For simplicity reasons, we do not aim to make cluster
-selectors commutative. If a cluster has been selected by a selector on the top of the list, it will not count towards any selector below
-it, even if it still matches with such selector. A selector with the count `All` will select all the clusters that match with it and have
-not been selected by any selector above.
+The list of cluster selectors may overlap with each other, i.e., there might be clusters that can count towards multiple cluster
+selectors at the same time. 
+
+* When cluster selectors are mutually exclusive (i.e., they do not overlap at all), KubeFleet will try to find the `count` number
+of clusters for each cluster selector;
+* When cluster selectors overlap, KubeFleet will solve for a set of selected clusters that fulfills all of the given cluster selectors
+based on their `minCount` values; in such circumstances one selected cluster might count towards multiple cluster selectors at the same time,
+and a cluster selector might match with more clusters than its `count` value. For simplicity reasons, KubeFleet does not provide any
+guarantee on the optimality of the solution, i.e., the solution does not necessarily minimize (or maximize) the number of the
+selected clusters. See the additional information below for more details.
+
+<details>
+  <summary>About overlapping cluster selectors</summary>
+
+> Suppose that the user runs a KubeFleet deployment of 6 clusters, with the following setup:
+>
+> * cluster `A` with labels `env=staging` and `region=eastus`
+> * cluster `B` with labels `env=staging` and `region=westus`
+> * cluster `C` with labels `env=staging` and `region=centralus`
+> * cluster `D` with labels `env=canary` and `region=westus`
+>
+> And a placement policy has been set up with the following cluster selectors:
+>
+> ```yaml
+> clusterSelectors:
+> - terms:
+>   - matchLabels:
+>      env: staging
+>   count: 2
+>   # minCount defaults to 2.
+> - terms:
+>   - matchLabels:
+>      region: westus
+>   count: 2
+>   # minCount defaults to 2.
+> ```
+>
+> As the cluster selectors overlap (some clusters have `env=staging` and `region=westus` labels at the same time),
+> there are three solutions that can satisfy the cluster selectors:
+>
+> * pick clusters `A`, `B`, `C`, and `D`: clusters `A`, `C` are picked to satisfy the first cluster selector, and 
+>   clusters `B`, `D` to satisfy the second cluster selector.
+> * pick clusters `A`, `B`, and `D`: cluster `A` is picked to satisfy the first cluster selector, 
+>   cluster `D` to satisfy the second cluster selector, and cluster `B` to satisfy both.
+> * pick clusters `B`, `C`, and `D`: clusters `C` are picked to satisfy the first cluster selector,
+>   cluster `D` to satisfy the second cluster selector, and cluster `B` to satisfy both.
+>
+> And KubeFleet might use any of the three solutions to complete the placement policy. KubeFleet might pick more clusters
+> for a cluster selector than its `count` value, and some of the picked clusters might count towards multiple cluster selectors
+> at the same time. The total number of picked clusters might also deviate from the sum of the `count` values of all cluster selectors.
+> If necessary, specify mutually exclusive cluster selectors to ensure that KubeFleet picks clusters in the exact numbers
+> specified by the `count` values of all cluster selectors.
+
+</details>
 
 A cluster selector might match with more clusters than its specified count; in such cases,
 KubeFleet will pick clusters based on the criteria below, under the principle of spreading placements as evenly as possible across
@@ -451,7 +506,7 @@ and learn about exactly which scheduling requirement a cluster scheduling attemp
         - terms:
           - matchLabels:
               team: red
-            clusterPropertyExpressions:
+            matchClusterPropertyExpressions:
             - key: k8s.io/k8s-version
               operator: In
               values:
@@ -460,7 +515,7 @@ and learn about exactly which scheduling requirement a cluster scheduling attemp
         - terms:
           - matchLabels:
               team: blue
-            clusterPropertyExpressions:
+            matchClusterPropertyExpressions:
             - key: k8s.io/k8s-version
               operator: In
               values:
@@ -473,7 +528,7 @@ and learn about exactly which scheduling requirement a cluster scheduling attemp
 
 When a cluster selector (a scheduling requirement) cannot be fulfilled, KubeFleet can request a new cluster from the environment,
 provided that proper platform/cloud provider support is available. Specifically, KubeFleet can produce a signal, in the form
-of a `ClusterRequest` API object:
+of a `ClusterRequest` API object (cluster-scoped):
 
 ```yaml
 apiVersion: placement.kubefleet.dev/v1alpha1
@@ -483,10 +538,9 @@ spec:
   placementPolicyRef:
     name: app
     namespace: work
-  clusterSelector:
-    terms:
-    - matchLabels:
-        topology.kubernetes.io/region: eastus
+  clusterSelectorTerms:
+  - matchLabels:
+      topology.kubernetes.io/region: eastus
 ```
 
 Obviously, not all scheduling requirements can be translated into a cluster request. KubeFleet will provide options for admins
@@ -529,17 +583,34 @@ reasonable trade-off between complexity and efficiency, with limited impact even
 
 #### Annotation-based placement
 
-For simpler placement scenarios, users can now annotate their resources to have them placed across clusters. Initially we have planned
-support for the following three annotation-based scenarios:
+For simpler placement scenarios, users can now annotate their resources to have them placed across clusters; the command illustrated
+below, for example, sets KubeFleet to place the `app` deployment in three separate regions, one cluster per region:
 
-* place a resource to all member clusters in the fleet, via the `kubefleet.dev/PLACEHOLDER` annotation;
-* place a resource to member clusters by their names (aliases) in the fleet, via the `kubefleet.dev/PLACEHOLDER` annotation; and
-* place a resource to member clusters from specific regions, in a one cluster per region manner, via the
-`kubefleet.dev/PLACEHOLDER` annotation.
+```bash
+kubectl annotate deploy app kubefleet.dev/place-to="region=eastus;region=westus;region=centralus"
+```
 
-The three annotations are mutually exclusive. Once annotated, KubeFleet will create a `PlacementPolicy` API object that selects
-the resource with an appropriate cluster selector; the name of the `PlacementPolicy` API object will be added to the resource
-as an annotation for tracking purposes. Users may edit/remove the annotation on the resource; KubeFleet will update/delete the corresponding `PlacementPolicy` API object as appropriate. If the resource itself is deleted, the `PlacementPolicy` API object will be deleted as well.
+KubeFleet reserves the annotation key, `kubefleet.dev/place-to`, for placement purposes. This annotation accepts a semicolon-separated list,
+where each item is a collection of label matchers with an optional `count` value, in the format of
+
+```
+LABEL_KEY=LABEL_VALUE[,LABEL_KEY=LABEL_VALUE...][,count=N|All]
+```
+
+For simplicity reasons, one may use `region` in place of `topology.kubernetes.io/region` and `alias` in place of `kubefleet.dev/cluster-alias`
+as the label keys in the label matchers. The `count` value is optional, accepts either a positive integer or the special value `All`, and
+defaults to 1 if not specified. Below lists a few more
+annotation-based placement examples:
+
+* `kubectl annotate ns work kubefleet.dev/place-to="alias=bravelion;alias=smartfish"`: place the `work` namespace to clusters `bravelion` and `smartfish`;
+* `kubectl annotate deploy app kubefleet.dev/place-to="env=staging,count=All;env=canary,region=eastus,count=1"`: place the `app` deployment to
+all clusters in the `staging` environment, and one cluster in the `canary` environment from the `eastus` region.
+
+Once annotated, KubeFleet will create a `PlacementPolicy` API object that selects the resource with appropriate cluster selectors;
+the name of the `PlacementPolicy` API object will be added to the resource as an annotation for tracking purposes. 
+
+Users may edit/remove the annotation on the resource; KubeFleet will update/delete the corresponding `PlacementPolicy` API object as
+appropriate. If the resource itself is deleted, the `PlacementPolicy` API object will be deleted as well.
 
 Sometimes a Kubernetes resource might have its dependencies. For example, a `Deployment` object might have `ConfigMaps` or `Secrets` that
 are referenced in its pod template; for a subset of well-known Kubernetes resources, namely `deployments`, `statefulsets`, `daemonsets`,
@@ -704,7 +775,7 @@ type PlacementPolicySpec struct {
 
     // Optional fields.
 
-	// The resource revision history limit for this application. Each rollout attempt will
+	// The resource revision history limit for this placement. Each rollout attempt will
 	// create a new resource revision, which is a snapshot of all the selected resources at the time point.
 	ResourceRevisionHistoryLimit *int32 `json:"resourceRevisionHistoryLimit,omitempty"`
 
@@ -730,10 +801,15 @@ type ClusterSelector struct {
 	// use the value "All".
 	Count *intstr.IntOrString `json:"count,omitempty"`
 
-    // If set to false, KubeFleet will not submit a cluster request when the cluster selector cannot be fulfilled.
-    //
-    // The default value is true. Note that this field takes effect if and only if cluster requests are enabled in KubeFleet.
-    RequestClusterIfUnfulfilled *bool `json:"requestClusterIfUnfulfilled,omitempty"`
+  // The minimum number of clusters that must be selected for the cluster selector to be fulfilled.
+  //
+  // The default value is the same as the `count` field when `count` is a positive integer, and 1 when `count` is set to "All".
+  MinCount *int32 `json:"minCount,omitempty"`
+
+  // If set to false, KubeFleet will not submit a cluster request when the cluster selector cannot be fulfilled.
+  //
+  // The default value is true. Note that this field takes effect if and only if cluster requests are enabled in KubeFleet.
+  RequestClusterIfUnfulfilled *bool `json:"requestClusterIfUnfulfilled,omitempty"`
 }
 
 // A LabelAndClusterPropertySelector describes a set of cluster labels and cluster properties
@@ -889,7 +965,7 @@ The list below summarizes the fields in the struct and how the setup deviates fr
     namespace exists on target clusters, usually via a `ClusterResourcePlacement` API object that must target the same set of clusters.
     The `ClusterResourcePlacement` needs also to be specifically set up to place only the namespace, without all the API objects within. This
     requirement, though logically sound, can be quite cumbersome, especially when the scheduling decision making process is
-    indeterministic or in environments where clusters can be provisioned on demand. Consequently, we add this field in `SyncStrategy` so that
+    nondeterministic or in environments where clusters can be provisioned on demand. Consequently, we add this field in `SyncStrategy` so that
     the owner namespace can be created automatically on a target cluster if it does not exist before, similar to how Helm (and other projects)
     support automatic namespace creation when deploying resources. Note that the created namespace itself will not be managed by KubeFleet.
 
@@ -1003,13 +1079,13 @@ type ClusterRequest struct {
 }
 
 type ClusterRequestSpec struct {
-    // A reference to the placement policy that created this cluster request.
-    PlacementPolicyRef *ObjectReference `json:"placementPolicyRef,omitempty"`
+  // A reference to the placement policy that created this cluster request.
+  PlacementPolicyRef *ObjectReference `json:"placementPolicyRef,omitempty"`
 
-	// The cluster selector that describes the requirements for the new cluster to be provisioned.
+	// The cluster selector terms that describe the requirements for the new cluster to be provisioned.
 	//
 	// If not specified, any member cluster can satisfy the request. This field is immutable after creation.
-	ClusterSelector ClusterSelector `json:"clusterSelector,omitempty"`
+	ClusterSelectorTerms []LabelAndClusterPropertySelector `json:"clusterSelectorTerms,omitempty"`
 }
 ```
 
@@ -1169,7 +1245,6 @@ The new placement experience will be guarded by the following E2E test scenarios
         * Creating a placement policy with a single cluster selector of a count of `N`;
         * Cluster preferences within a single cluster selector;
         * Mixing label selectors, label expressions, and property expressions in a single cluster selector;
-        * No double-selection across cluster selectors;
         * Ordered processing of cluster selectors;
         * Cluster selectors based on the reserved label `kubefleet.dev/cluster-alias`;
         * Unschedulable cluster selectors;
