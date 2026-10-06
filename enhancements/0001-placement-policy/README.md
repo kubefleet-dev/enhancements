@@ -558,7 +558,11 @@ spec:
 Obviously, not all scheduling requirements can be translated into a cluster request. The provider declares which keys it can act on
 in the *selector vocabulary* of its `ClusterProviderClass` (label keys, optionally with the values it accepts, and cluster property keys,
 optionally with bounds); if a cluster selector uses a key, value, or property outside the vocabulary of the class its placement policy
-resolves to, KubeFleet will not submit a cluster request for it, and reports why on the placement policy. Users also
+resolves to, KubeFleet will not submit a cluster request for it, and reports why on the placement policy. Only terms that say what to
+provision can become a request -- label matchers, `In` label expressions, and `Eq`/`Gt`/`Ge`/`Lt`/`Le` property comparisons that some
+value within the class's bounds can satisfy; `NotIn`, `Exists`, `DoesNotExist`, and `Ne` say what *not* to provision, which no
+blueprint can act on, so a selector using them is not requested either. The vocabulary is checked when a request would be issued: a
+request already outstanding is not withdrawn because its class vanished or its vocabulary narrowed afterwards. Users also
 have the option to explicitly disable cluster requests for a cluster selector.
 
 KubeFleet expects that the cluster request will be reconciled by the platform/cloud provider in use. A cluster request is in essence
