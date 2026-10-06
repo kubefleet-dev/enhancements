@@ -10,6 +10,7 @@
   - [`PlacementPolicy` APIs](#placementpolicy-apis)
     - [Comparing the `PlacementPolicy` APIs with the current placement APIs (`ResourcePlacement` and `ClusterResourcePlacement` APIs)](#comparing-the-placementpolicy-apis-with-the-current-placement-apis-resourceplacement-and-clusterresourceplacement-apis)
   - [Cluster requests](#cluster-requests)
+    - [Cluster claim fulfillment](#cluster-claim-fulfillment)
     - [Annotation-based placement](#annotation-based-placement)
     - [How the `PlacementPolicy` APIs work](#how-the-placementpolicy-apis-work)
   - [User Stories (optional)](#user-stories-optional)
@@ -222,7 +223,13 @@ their corresponding placement experiences, the core KubeFleet architecture and t
 much of the logic will be reused in both placement experiences.
 * KubeFleet excels at its placement capabilities; it is not a platform that manages the lifecycle of member clusters. The proposal
 sets up KubeFleet so that its placement capabilities can connect with platforms/cloud providers that manage the lifecycle of member
-clusters, but it does not aim to provide such capabilities itself.
+clusters, but it does not aim to provide such capabilities itself in the placement path (see below).
+    * What KubeFleet does own is the *contract* between a placement and the platform: a `ClusterProviderClass` object that routes a
+    cluster claim to a provider and declares the selector terms that provider understands, and the protocol by which a provider
+    accepts, fulfills, fails, or cancels a claim (see [Cluster claim fulfillment](#cluster-claim-fulfillment)).
+    * KubeFleet ships, in the same repository but as separately deployed, optional binaries that are never part of the hub agent, a
+    reference provider and a Cluster API bridge. These do create and delete clusters through the platform's own APIs on behalf of
+    claims; placement itself does not depend on them, and the platform's blueprint stays the platform's.
     * The new placement experience does not require the presence of such platforms/cloud providers to function either. Even though it
     is designed for a multi-cluster environment of a more dynamic nature, it would function just as well in less dynamic environments.
     We do not see different types of environments, but more of a spectrum where KubeFleet operates equally well on both ends.
@@ -526,6 +533,11 @@ and learn about exactly which scheduling requirement a cluster scheduling attemp
 
 ### Cluster requests
 
+> **Note (revision #3):** the shipped API names the cluster request `ClusterClaim`, its status field
+> `LatestObservedClusterCreationTimestamp` shipped as `lastObservedMostRecentClusterCreationTimestamp`, the placement status field
+> `OngoingClusterRequests` as `activeClusterClaims`, and the selector field `RequestClusterIfUnfulfilled` as the `whenUnfulfilled` enum.
+> For readability this document keeps "cluster request" in prose outside the fulfillment subsection below, which uses the shipped names.
+
 When a cluster selector (a scheduling requirement) cannot be fulfilled, KubeFleet can request a new cluster from the environment,
 provided that proper platform/cloud provider support is available. Specifically, KubeFleet can produce a signal, in the form
 of a `ClusterRequest` API object (cluster-scoped):
@@ -543,15 +555,17 @@ spec:
       topology.kubernetes.io/region: eastus
 ```
 
-Obviously, not all scheduling requirements can be translated into a cluster request. KubeFleet will provide options for admins
-to specify which keys are eligible for cluster requests; if a cluster selector contains an ineligible key in its label matchers,
-label expressions, or cluster property expressions, KubeFleet will not submit a cluster request when it cannot be fulfilled. Users also
+Obviously, not all scheduling requirements can be translated into a cluster request. The provider declares which keys it can act on
+in the *selector vocabulary* of its `ClusterProviderClass` (label keys, optionally with the values it accepts, and cluster property keys,
+optionally with bounds); if a cluster selector uses a key, value, or property outside the vocabulary of the class its placement policy
+resolves to, KubeFleet will not submit a cluster request for it, and reports why on the placement policy. Users also
 have the option to explicitly disable cluster requests for a cluster selector.
 
 KubeFleet expects that the cluster request will be reconciled by the platform/cloud provider in use. A cluster request is in essence
 a hint of what kind of cluster is needed; it is not a full specification of a Kubernetes cluster. KubeFleet assumes that the underlying
 platform/cloud provider owns a `class`-like configuration (such as `ClusterClass` objects in the Cluster API project) that can function
-as cluster blueprints, which would take the hint from KubeFleet as inputs/overrides and prepare the new cluster accordingly.
+as cluster blueprints, which would take the hint from KubeFleet as inputs/overrides and prepare the new cluster accordingly. The
+`ClusterProviderClass` names that blueprint, through parameters KubeFleet passes along without interpreting them.
 
 A placement policy manages the lifecycle of all the cluster requests it creates. Note that the placement will not wait for a cluster request
 to be completed; instead, it watches changes on the member cluster side and evaluates unfulfilled cluster selectors as soon as a new
@@ -566,8 +580,9 @@ of a new cluster to the fleet might be able to satisfy multiple unfulfilled clus
 multiplexing and de-multiplexing overlapping scheduling requirements/constraints can be quite complicated, if not at all impossible, KubeFleet
 will not attempt to arrange/compose cluster requests across placements; instead:
 
-* KubeFleet will provide user-configurable limits (one by default) on the number of concurrent cluster requests that can be
-submitted by a placement and across the fleet;
+* KubeFleet provides limits (one by default) on the number of concurrent cluster requests that can be
+submitted by a placement (`spec.maxConcurrentClusterClaims` on the placement policy) and across the fleet (a hub agent option); the
+effective per-placement limit is the smaller of the two;
 * Any platform/cloud provider controller for cluster provisioning should also have its own limits on the number of concurrent cluster
 requests that it can handle;
 * The hub cluster API server tracks the creation timestamps of all member cluster API objects. Put together, the timestamps become a
@@ -580,6 +595,144 @@ controller has inspected all the clusters). Only fresh cluster requests need rec
 
 Admittedly this is a best-effort approach and there might still be cases where clusters are over-provisioned; however, this should be a
 reasonable trade-off between complexity and efficiency, with limited impact even under the worst case scenarios.
+
+#### Cluster claim fulfillment
+
+`Completed=True` on a claim means the provider has *registered* the provisioned cluster with the fleet (a `MemberCluster` exists);
+whether the cluster *joins* — its member agent reports in and the cluster becomes eligible for scheduling — is observed by KubeFleet,
+not by the provider, since the member agent's identity and installation are the platform's to provide (the "join hook" below).
+
+Fulfillment is a contract between KubeFleet and a provider, with one object on each side of it.
+
+**The `ClusterProviderClass`** (cluster-scoped, owned by the platform administrator, in the shape of a `StorageClass` or `GatewayClass`):
+
+```go
+type ClusterProviderClassSpec struct {
+	// The provider that fulfills claims of this class; immutable, since in-flight claims are held by it.
+	ProvisionerName string `json:"provisionerName"`
+	// Opaque parameters passed to the provider with every claim, e.g. the name of the platform blueprint.
+	Parameters map[string]string `json:"parameters,omitempty"`
+	// The selector terms the provider understands: label keys (optionally with values) and property keys (optionally bounded).
+	SelectorVocabulary *SelectorVocabulary `json:"selectorVocabulary,omitempty"`
+	// Manual (default) or Automatic.
+	Approval ClusterClaimApprovalMode `json:"approval,omitempty"`
+	// Timers, each counted from the condition that starts the phase it bounds.
+	PendingClaimTTL      *metav1.Duration `json:"pendingClaimTTL,omitempty"`      // from Approved; default 30m
+	MaxProvisionDuration *metav1.Duration `json:"maxProvisionDuration,omitempty"` // from Accepted; default 60m
+	JoinTimeout          *metav1.Duration `json:"joinTimeout,omitempty"`          // from Completed; default 30m
+	// Hold (default) or Retry, with retryAfter (default 15m).
+	OnFailure  ClusterClaimFailureAction `json:"onFailure,omitempty"`
+	RetryAfter *metav1.Duration          `json:"retryAfter,omitempty"`
+}
+
+type SelectorVocabulary struct {
+	LabelKeys    []LabelKeyRule    `json:"labelKeys,omitempty"`    // at most 64
+	PropertyKeys []PropertyKeyRule `json:"propertyKeys,omitempty"` // at most 64
+}
+
+type LabelKeyRule struct {
+	Key    string   `json:"key"`
+	Values []string `json:"values,omitempty"` // empty means any value
+}
+
+type PropertyKeyRule struct {
+	Key string  `json:"key"`
+	Min *string `json:"min,omitempty"` // a quantity
+	Max *string `json:"max,omitempty"` // a quantity
+}
+```
+
+A class with no vocabulary makes no selector term claimable; only a selector with no terms at all ("any cluster") can then produce a
+claim. Every duration must be positive.
+
+A placement policy names its class in `spec.clusterProviderClassName`; when it names none, the class annotated
+`placement.kubefleet.dev/is-default-class: "true"` is used, and when there is no (single) default, the policy issues no claims. The
+policy also carries `spec.maxConcurrentClusterClaims` (default 1, at most 10); a claim serves one cluster selector, so this only matters
+to a policy with several selectors. KubeFleet stamps the resolved class on each claim it issues (`spec.clusterProviderClassName`,
+immutable once set), which is how a provider recognizes the claims meant for it, and what admission policies key on.
+
+**The claim's conditions, and who writes each.** The contract gives every condition exactly one writer:
+
+| Condition | Written by | Meaning |
+| --- | --- | --- |
+| `Approved` | an approver, or KubeFleet when the class approves automatically | No provider may act before it is `True`. `False/Denied` is terminal and always held; an approver may still approve a denied claim later. KubeFleet re-asserts an automatic approval it failed to stamp. |
+| `Accepted` | the provider, together with its finalizer `kubefleet.dev/fulfiller` | The provider has taken the claim. Its transition time starts `maxProvisionDuration`. |
+| `Completed` | the provider | `True/Fulfilled` once the cluster is registered, with `status.provisionedClusterName`; `False/Failed` on a permanent failure, which is terminal. A fulfilled claim stays fulfilled (enforced at admission). |
+| `Expired` | KubeFleet | `True` is terminal: `PendingTimeout` (approved, but neither accepted nor claimed by a finalizer within `pendingClaimTTL`), `JoinTimeout` (fulfilled, but the cluster is not eligible by `joinTimeout`), `NotMatching` (fulfilled, the cluster became eligible, but it can never satisfy the selector — wrong labels, or a taint the policy does not tolerate). |
+
+**Approval is enforced at admission.** A `ValidatingAdmissionPolicy` on `clusterclaims/status` rejects any change to the `Approved`
+entry unless the requester is the hub agent, a member of the `system:masters` group (as KubeFleet's other admission policies allow), or
+one of the configured approver users or groups; with no
+approvers configured, the policy is not generated at all, and a fulfiller refuses an unapproved claim regardless. `Automatic` approval is
+only as strong as who may reference the class: any placement policy that may name an automatically approving class can have clusters
+provisioned, so the right to reference such a class should be granted as sparingly as the right to spend on clusters.
+
+A terminal claim (`Failed`, `Expired`, or `Denied`) is **kept as the record** of what happened: it keeps its name and its slot in the
+placement's concurrency budget, so nothing re-issues it on the next reconcile, and the placement's `Scheduled` condition says why it is
+held. Under `onFailure: Hold` it stays until the cluster selector or the class changes, or an administrator deletes it; under `Retry`,
+KubeFleet withdraws it `retryAfter` after it became terminal and issues a fresh claim (except a denied claim, which is always held). An
+unapproved claim never expires: approval is the brake. Every terminal transition raises an event and a metric. Terminal and unapproved
+claims occupy their placement's slot but do not count toward the fleet-wide limit, so one parked placement cannot park the fleet; the
+fleet-wide limit is exact for classes with automatic approval and bounds issuance for manual ones, where the provider's own concurrency
+limit is the backstop.
+
+**Identity.** The provider derives the cluster's name from the claim's name and UID (`<claim-name prefix>-<hash of UID>`, within the
+limits a `MemberCluster` name must respect), records it on the claim in the `placement.kubefleet.dev/provisioned-cluster-name`
+annotation before creating anything so that a restarted provider resumes rather than duplicates, and labels the cluster with
+`kubefleet.dev/fulfilled-claim-name` and `kubefleet.dev/fulfilled-claim-uid`.
+Because KubeFleet re-issues a claim under the *same name* when it needs one more cluster for the selector (after a fulfilled claim
+is withdrawn) or when a previously provisioned cluster has stopped being eligible, the provider decides as follows on every attempt:
+a cluster carrying **this claim's UID** exists ⇒ resume it; otherwise an owned cluster for this claim name (carrying another claim's
+UID, and not being deleted) is registered but **not eligible** ⇒ remediate it if the provider can, else fail with a message; otherwise
+⇒ provision a **new** cluster. It never provisions a second cluster for one claim UID, and never touches a cluster carrying another
+claim's UID. A dead owned cluster whose provider cannot remediate therefore fails every retry until an operator deletes its
+`MemberCluster`, which is the intended brake.
+
+**Withdrawal and expiry.** One rule gates every deprovision a provider ever performs: **a cluster is deprovisioned only if it has not
+joined** (its `MemberCluster` carries no member-agent `Joined=True` condition, read ignoring `observedGeneration`) **and is not
+eligible now**, re-read immediately before acting; a cluster that joined belongs to its `MemberCluster` from then on, whatever its
+eligibility is at any later instant. With that rule:
+
+| Signal | Claim state | Provider's action |
+| --- | --- | --- |
+| `Expired=True/JoinTimeout` (object stays) | fulfilled | apply the rule: deprovision if the cluster never joined and is still not eligible, otherwise release; then release the finalizer |
+| `Expired=True/NotMatching` | fulfilled | release, never deprovision |
+| `Expired=True/PendingTimeout` | not accepted | release the finalizer if somehow held; clean up anything the pre-recorded name points at |
+| `deletionTimestamp` (takes precedence over `Expired`) | not accepted | nothing |
+| `deletionTimestamp` | accepted, not completed | cancel and deprovision (under the rule) |
+| `deletionTimestamp` | failed | deprovision partial infrastructure (under the rule), release |
+| `deletionTimestamp` | fulfilled | release; deprovision only if the cluster never joined and is not eligible now (a withdrawal inside the join window) |
+
+Withdrawal is KubeFleet's *success* signal — a claim is withdrawn the moment its selector is satisfied — as well as what follows a
+selector change, a class change, or the deletion of the placement policy; the rule above is what makes all of those safe for a
+cluster that is in use. KubeFleet never removes a provider's finalizer. Acceptance is two writes in a fixed order: the annotation and
+the finalizer in one resourceVersion-conditional update of the claim, then `Accepted` on the status. An expiry stamped after the
+provider read the claim and before that first write makes the write conflict, and the provider stops; once the finalizer is on, the
+claim counts as accepted and KubeFleet no longer expires it, and the provider re-reads after writing `Accepted` and never provisions a
+claim that turned out expired. A claim whose freshness field is unset is fresh (there was nothing to be stale against); a stale claim
+is requeued, never failed, and staleness only keeps a provider from *starting* a provision, never from resuming one.
+
+**What a provider implements.** A provider supplies `Provision(request) → cluster name`, `Deprovision(request)`, and optionally
+`Remediate(request)`; a shared framework in KubeFleet (`pkg/v1/fulfiller`) does everything above — the watch, the approval gate,
+freshness, acceptance, the identity rule, UID-keyed status writes, the transient/permanent error split with `maxProvisionDuration`,
+and withdrawal by state — in the way the CSI external-provisioner does the PVC choreography for a storage driver. A cloud-free
+reference provider and a conformance suite are the compatibility bar; a Cluster API bridge is the first real provider.
+
+**The join hook.** Registering a cluster is the provider's job; getting a member agent onto it, with the hub identity the agent
+authenticates with, is the platform's. The contract names this hand-off and the reference provider simulates it; a cluster whose hook
+never runs is caught by `joinTimeout`, not left standing.
+
+**Open questions for review** (the implementation takes the recommendation unless told otherwise):
+
+1. Should KubeFleet own this contract at all, given the non-goal above? *Recommendation: yes, as amended — routing, vocabulary, and
+   protocol are KubeFleet's; blueprints and lifecycle decisions are the platform's, and KubeFleet's optional providers carry them out
+   through the platform's APIs.*
+2. Should a placement policy with no resolvable class, or a selector outside the class vocabulary, issue no claim and report why in the
+   message of its `Scheduled=False` condition and in an event, with no new condition reasons? *Recommendation: yes.*
+3. Should `Completed=True` mean *registered* (recommended) rather than *joined*?
+4. Should approvers be a hub-wide list (recommended first) or per class?
+5. Should the claim-management code in the placement policy controller be restructured before the terminal states are added?
+   *Recommendation: no; a refactor, if wanted, is its own behaviour-invariant change.*
 
 #### Annotation-based placement
 
@@ -779,6 +932,12 @@ type PlacementPolicySpec struct {
 	// create a new resource revision, which is a snapshot of all the selected resources at the time point.
 	ResourceRevisionHistoryLimit *int32 `json:"resourceRevisionHistoryLimit,omitempty"`
 
+	// (Revision #3) The ClusterProviderClass whose provider fulfills this placement's cluster claims; the fleet's default class
+	// when unset. See "Cluster claim fulfillment".
+	ClusterProviderClassName *string `json:"clusterProviderClassName,omitempty"`
+	// (Revision #3) The number of cluster claims this placement may have outstanding at once; defaults to 1, at most 10.
+	MaxConcurrentClusterClaims *int32 `json:"maxConcurrentClusterClaims,omitempty"`
+
 	// The strategy KubeFleet uses to synchronize resources to target clusters. Set this field
 	// to configure how resources are applied, how to handle drifts/takeovers, and what to do with
 	// placed resources when a placement is deleted.
@@ -809,7 +968,7 @@ type ClusterSelector struct {
   // If set to false, KubeFleet will not submit a cluster request when the cluster selector cannot be fulfilled.
   //
   // The default value is true. Note that this field takes effect if and only if cluster requests are enabled in KubeFleet.
-  RequestClusterIfUnfulfilled *bool `json:"requestClusterIfUnfulfilled,omitempty"`
+  RequestClusterIfUnfulfilled *bool `json:"requestClusterIfUnfulfilled,omitempty"` // shipped as the whenUnfulfilled enum; a claim also needs a resolvable ClusterProviderClass (revision #3)
 }
 
 // A LabelAndClusterPropertySelector describes a set of cluster labels and cluster properties
@@ -1061,6 +1220,11 @@ in play.
 
 ### The API definition of the `ClusterRequest` API
 
+> **Note (revision #3):** shipped as `ClusterClaim`. The fulfillment contract adds `spec.clusterProviderClassName` (set by
+> KubeFleet, immutable once set), the `Approved`, `Accepted`, and `Expired` conditions beside `Completed`, the `Fulfilled`/`Failed`
+> reasons on `Completed`, and admission rules that pin the terminal states; see
+> [Cluster claim fulfillment](#cluster-claim-fulfillment).
+
 The `ClusterRequest` API is defined as follows:
 
 ```go
@@ -1110,10 +1274,11 @@ type ClusterRequestStatus struct {
 }
 ```
 
-The new placement experience expects one condition in the status:
+The new placement experience expects the conditions described in [Cluster claim fulfillment](#cluster-claim-fulfillment)
+(`Approved`, `Accepted`, `Completed`, `Expired`); the one the initial draft defined is:
 
 * `Completed`
-    * This condition is set to `True` if the cluster request has been fulfilled and a new cluster has been provisioned; otherwise, it is set
+    * This condition is set to `True` once the provider has provisioned a new cluster and registered it with the fleet; otherwise it is not `True`: it is set
     to `False`.
     * The condition will have its reason set to `Failed` if the platform/cloud provider controller cannot complete the request.
 
@@ -1141,6 +1306,10 @@ only for admins (users in the `system:masters` group).
 >
 > Platforms that are built on top of KubeFleet might need to implement additional security measures to ensure that the annotation-based
 > placement workflow will not be abused. 
+
+Cluster claim approval is the same kind of gate: a validating admission policy restricts who may set the `Approved` condition on a
+cluster claim, and a class that approves automatically should be referenceable only by principals trusted to provision clusters (see
+[Cluster claim fulfillment](#cluster-claim-fulfillment)).
 
 ## Observability
 
@@ -1263,6 +1432,14 @@ The new placement experience will be guarded by the following E2E test scenarios
     * Fulfilling cluster requests can complete unfulfilled cluster selectors;
     * Withdrawing cluster requests when an unfulfilled cluster selector can be completed;
     * Concurrency limits per placement and per fleet are respected;
+    * Approval: a manual class issues a claim no provider acts on until approved; a non-approver cannot approve; an automatic class
+    approves on issue and re-asserts a lost approval;
+    * Terminal states: failed, expired (pending, join, not-matching), and denied claims are kept, hold their slot, and are not re-issued
+    under `Hold`; `Retry` re-issues after `retryAfter`; a denied claim is always held;
+    * Identity: a re-issued claim provisions a new cluster while the previous one is eligible, remediates or fails while it is not, and
+    a restarted provider resumes its own cluster;
+    * Withdrawal: a withdrawn fulfilled claim never deprovisions a cluster that joined; a withdrawn in-flight claim is cancelled; a
+    never-joined cluster is deprovisioned on join timeout or on a withdrawal inside the join window;
 
 ### Compatibility tests
 
@@ -1302,6 +1479,7 @@ See the discussions in the [About having two placement experiences in KubeFleet]
 
 ## Implementation History
 
+* Oct 06, 2026: Revision #3: the cluster claim fulfillment contract (`ClusterProviderClass`, approval, terminal states, provider protocol).
 * Aug 03, 2026: Revision #2 on the initial draft based on discussions (cluster selectors and annotation-based placement workflow).
 * Jun 17, 2026: Revision #1 on the initial draft based on early discussions.
 * Jul 01, 2026: Initial draft completed.
